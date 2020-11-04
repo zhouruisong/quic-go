@@ -3,6 +3,7 @@
 package quic
 
 import (
+	"fmt"
 	"net"
 	"time"
 
@@ -124,6 +125,18 @@ var _ = Describe("Basic Conn Test", func() {
 			Eventually(packetChan).Should(Receive(&p))
 			Expect(utils.IsIPv4(p.remoteAddr.(*net.UDPAddr).IP)).To(BeFalse())
 			Expect(p.ecn).To(Equal(protocol.ECT1))
+		})
+	})
+
+	Context("Batch Reading", func() {
+		BeforeEach(func() {
+			if batchSize == 1 {
+				Skip("This test only makes sense if we can read multiple packets in batch.")
+			}
+		})
+
+		FIt("test", func() {
+			fmt.Println("hallo")
 		})
 	})
 })
