@@ -279,7 +279,7 @@ func (p *packetPacker) PackConnectionClose(quicErr *qerr.QuicError) (*coalescedP
 		}
 		var paddingLen protocol.ByteCount
 		if encLevel == protocol.EncryptionInitial {
-			paddingLen = p.paddingLen(payloads[i].frames, size)
+			paddingLen = p.initialPaddingLen(payloads[i].frames, size)
 		}
 		c, err := p.appendPacket(buffer, hdrs[i], payloads[i], paddingLen, encLevel, sealers[i])
 		if err != nil {
@@ -338,9 +338,8 @@ func (p *packetPacker) MaybePackAckPacket(handshakeConfirmed bool) (*packedPacke
 	return p.writeSinglePacket(hdr, payload, encLevel, sealer)
 }
 
-// only works for Initial packets
-// The size is the expected size of the packet, if no padding was applied.
-func (p *packetPacker) paddingLen(frames []ackhandler.Frame, size protocol.ByteCount) protocol.ByteCount {
+// size is the expected size of the packet, if no padding was applied.
+func (p *packetPacker) initialPaddingLen(frames []ackhandler.Frame, size protocol.ByteCount) protocol.ByteCount {
 	// For the server, only ack-eliciting Initial packets need to be padded.
 	if p.perspective == protocol.PerspectiveServer && !ackhandler.HasAckElicitingFrames(frames) {
 		return 0
@@ -424,7 +423,7 @@ func (p *packetPacker) PackCoalescedPacket() (*coalescedPacket, error) {
 		packets: make([]*packetContents, 0, numPackets),
 	}
 	if initialPayload != nil {
-		padding := p.paddingLen(initialPayload.frames, size)
+		padding := p.initialPaddingLen(initialPayload.frames, size)
 		cont, err := p.appendPacket(buffer, initialHdr, initialPayload, padding, protocol.EncryptionInitial, initialSealer)
 		if err != nil {
 			return nil, err
@@ -673,7 +672,7 @@ func (p *packetPacker) MaybePackProbePacket(encLevel protocol.EncryptionLevel) (
 	size := p.packetLength(hdr, payload) + protocol.ByteCount(sealer.Overhead())
 	var padding protocol.ByteCount
 	if encLevel == protocol.EncryptionInitial {
-		padding = p.paddingLen(payload.frames, size)
+		padding = p.initialPaddingLen(payload.frames, size)
 	}
 	buffer := getPacketBuffer()
 	cont, err := p.appendPacket(buffer, hdr, payload, padding, encLevel, sealer)
@@ -683,6 +682,28 @@ func (p *packetPacker) MaybePackProbePacket(encLevel protocol.EncryptionLevel) (
 	return &packedPacket{
 		buffer:         buffer,
 		packetContents: cont,
+	}, nil
+}
+
+func (p *packetPacker) PackMTUProbePacket(ping ackhandler.Frame, size protocol.ByteCount) (*packedPacket, error) {
+	payload := &payload{
+		frames: []ackhandler.Frame{ping},
+		length: ping.Length(p.version),
+	}
+	buffer := getPacketBuffer()
+	sealer, err := p.cryptoSetup.Get1RTTSealer()
+	if err != nil {
+		return nil, err
+	}
+	hdr := p.getShortHeader(sealer.KeyPhase())
+	padding := size - p.packetLength(hdr, payload) - protocol.ByteCount(sealer.Overhead())
+	contents, err := p.appendPacket(buffer, hdr, payload, padding, protocol.Encryption1RTT, sealer)
+	if err != nil {
+		return nil, err
+	}
+	return &packedPacket{
+		buffer:         buffer,
+		packetContents: contents,
 	}, nil
 }
 
@@ -765,7 +786,7 @@ func (p *packetPacker) writeSinglePacket(
 	buffer := getPacketBuffer()
 	var paddingLen protocol.ByteCount
 	if encLevel == protocol.EncryptionInitial {
-		paddingLen = p.paddingLen(payload.frames, hdr.GetLength(p.version)+payload.length+protocol.ByteCount(sealer.Overhead()))
+		paddingLen = p.initialPaddingLen(payload.frames, hdr.GetLength(p.version)+payload.length+protocol.ByteCount(sealer.Overhead()))
 	}
 	contents, err := p.appendPacket(buffer, hdr, payload, paddingLen, encLevel, sealer)
 	if err != nil {
@@ -781,7 +802,7 @@ func (p *packetPacker) appendPacket(
 	buffer *packetBuffer,
 	header *wire.ExtendedHeader,
 	payload *payload,
-	padding protocol.ByteCount, // add padding such that the packet has this length. 0 for no padding.
+	padding protocol.ByteCount, // length of padding to add. 0 for no padding.
 	encLevel protocol.EncryptionLevel,
 	sealer sealer,
 ) (*packetContents, error) {
